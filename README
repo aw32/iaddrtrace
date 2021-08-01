@@ -1,0 +1,17 @@
+iaddrtrace
+-----------
+
+Use ptrace to singlestep a program and print the trace of instruction addresses.
+
+Usage
+------
+
+    iaddrtrace [options] [--] program [arguments]
+    Options:
+        -s ADDR     -- Address to start the output in hex
+        -d ADDR     -- Address to stop the output in hex
+        -o FILE     -- Use FILE instead of stderr
+
+References
+-----------
+https://blog.tartanllama.xyz/writing-a-linux-debugger-setup/
