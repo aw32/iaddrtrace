@@ -2,14 +2,16 @@ iaddrtrace
 -----------
 
 Use ptrace to singlestep a program and print the trace of instruction addresses.
+Start addresses are turned into breakpoints.
+Tracer is detached after stop addresses.
 
 Usage
 ------
 
     iaddrtrace [options] [--] program [arguments]
     Options:
-        -s ADDR     -- Address to start the output in hex
-        -d ADDR     -- Address to stop the output in hex
+        -s ADDR     -- Comma-separated list of addresses to start the output in hex
+        -d ADDR     -- Comma-separated list of addresses to stop the output in hex
         -o FILE     -- Use FILE instead of stderr
 
 References
