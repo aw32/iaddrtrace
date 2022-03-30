@@ -1,23 +1,64 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/ptrace.h>
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <sys/personality.h>
 
-//TODO: Check every ptrace return value
-//TODO: Kill tracee on error
+
+void print_maps(pid_t pid) {
+    char cmd[100];
+    memset(cmd, 0, 100);
+    snprintf(cmd, 99, "cat /proc/%d/maps", pid);
+    system(cmd);
+}
+
+void print_hex(uint8_t *number, int size, FILE *restrict out) {
+    for(int i=size-1; i>=0; i--) {
+        uint8_t n = number[i];
+        char c = (n>>4)+48;
+        c = c>57 ? c+39 : c;
+        fputc(c, out);
+        c = (n&15) + 48;
+        c = c>57 ? c+39 : c;
+        fputc(c, out);
+    }
+}
+
+void print_hex_nolead(uint8_t *number, int size, FILE *restrict out) {
+    bool lead = 1;
+    for(int i=size-1; i>=0; i--) {
+        uint8_t n = number[i];
+        char c = (n>>4)+48;
+        c = c>57 ? c+39 : c;
+        if (c != 48 || lead == 0) {
+            lead = 0;
+            fputc(c, out);
+        }
+        c = (n&15) + 48;
+        c = c>57 ? c+39 : c;
+        if (c != 48 || lead == 0) {
+            lead = 0;
+            fputc(c, out);
+        }
+    }
+}
 
 void print_help(FILE *f) {
-    fprintf(f, "iaddrtrace [options] [--] program [arguments]\n");
-    fprintf(f, "Options:\n");
-    fprintf(f, "    -s ADDR     -- Comma-separated list of addresses to start the output in hex\n");
-    fprintf(f, "    -d ADDR     -- Comma-separated list of addresses to stop the output in hex\n");
-    fprintf(f, "    -o FILE     -- Use FILE instead of stderr\n");
+    fputs(
+        "iaddrtrace [options] [--] program [arguments]\n"
+        "Options:\n"
+        "    -s ADDR     -- Comma-separated list of addresses to start the output in hex\n"
+        "    -d ADDR     -- Comma-separated list of addresses to stop the output in hex\n"
+        "    -k          -- Kill tracee on trace end\n"
+    ,f);
 }
 
 static uint8_t *address_start_bytes = 0;
@@ -25,7 +66,7 @@ static unsigned long long int *address_start = 0;
 static size_t address_start_num = 0;
 static unsigned long long int *address_stop = 0;
 static size_t address_stop_num = 0;
-static FILE *output_file = 0;
+static bool opt_kill = false;
 
 static int byte_swap(pid_t pid, unsigned long long int addr, uint8_t *save) {
     //fprintf(stderr, "Swap %llx %x\n", addr, *save);
@@ -34,7 +75,11 @@ static int byte_swap(pid_t pid, unsigned long long int addr, uint8_t *save) {
     if (data == -1) {
         int error = errno;
         if (error != 0) { // return value maybe actual data, not an error
-            fprintf(stderr, "Failed to peek data at %llx: %s\n", addr, strerror(error));
+            fputs("ptrace(PTRACE_PEEKDATA): ", stderr);
+            fputs(strerror(error), stderr);
+            fputs("\nFailed to peek data at ", stderr);
+            print_hex_nolead((uint8_t *) &addr, sizeof(addr), stderr);
+            fputc('\n', stderr);
             return -1;
         }
     }
@@ -45,16 +90,24 @@ static int byte_swap(pid_t pid, unsigned long long int addr, uint8_t *save) {
     long err = ptrace(PTRACE_POKEDATA, pid, addr, data);
     if (err == -1) {
         int error = errno;
-        fprintf(stderr, "Failed to poke data at %llx: %s\n", addr, strerror(error));
+        fputs("ptrace(PTRACE_POKEDATA): ", stderr);
+        fputs(strerror(error), stderr);
+        fputs("\nFailed to poke data at ", stderr);
+        print_hex_nolead((uint8_t *) &addr, sizeof(addr), stderr);
+        fputc('\n', stderr);
         return -1;
     }
     return 0;
 }
 
 static int breakpoints_enable(pid_t pid, unsigned long long int *list, size_t num, uint8_t** save) {
+    if (num == 0) {
+        *save = NULL;
+        return 0;
+    }
     *save = (uint8_t*) calloc(num, sizeof(uint8_t));
     if (*save == NULL) {
-        fprintf(stderr, "Out of memory\n");
+        fputs("Out of memory\n", stderr);
         exit(1);
     }
     size_t i = 0;
@@ -70,6 +123,10 @@ static int breakpoints_enable(pid_t pid, unsigned long long int *list, size_t nu
 }
 
 static int breakpoints_disable(pid_t pid, unsigned long long int *list, size_t num, uint8_t** save) {
+    if (num == 0) {
+        *save = NULL;
+        return 0;
+    }
     size_t i = 0;
     int err = 0;
     for (i = 0; i<num; i++) {
@@ -106,10 +163,15 @@ static void parse_address_list(const char *in_list, unsigned long long int **out
         }
         segments++;
     }
+    if (segments == 0) {
+        *num = 0;
+        *out_list = NULL;
+        return;
+    }
     /* allocate list */
     *out_list = (unsigned long long int *) calloc(segments, sizeof(unsigned long long int));
     if (*out_list == NULL) {
-        fprintf(stderr, "Out of memory\n");
+        fputs("Out of memory\n", stderr);
         exit(1);
     }
     /* try to parse each segment */
@@ -121,12 +183,16 @@ static void parse_address_list(const char *in_list, unsigned long long int **out
     for(i = 0; i < segments; i++) {
         token = strsep(&seg_next, ",");
         if (token == NULL) {
-            fprintf(stderr, "Invalid option %s\n", in_list);
+            fputs("Invalid option ", stderr);
+            fputs(in_list, stderr);
+            fputc('\n', stderr);
             exit(1);
         }
         (*out_list)[i] = strtoull(token, &endptr, 16);
         if (*endptr != 0) {
-            fprintf(stderr, "Invalid address %s\n", token);
+            fputs("Invalid address ", stderr);
+            fputs(token, stderr);
+            fputc('\n', stderr);
             exit(1);
         }
     }
@@ -136,15 +202,20 @@ static void parse_address_list(const char *in_list, unsigned long long int **out
 
 int main(int argc, char** argv) {
 
+    if (argc < 2) {
+        print_help(stderr);
+        exit(1);
+    }
+
     int argv_program_index = 1;
     {
         int opt;
-        while ((opt = getopt(argc, argv, "+hs:d:o:")) != -1) {
+        while ((opt = getopt(argc, argv, "+hs:d:k")) != -1) {
             switch(opt) {
                 case 's':
                 {
                     if (*optarg == '-') {
-                        fprintf(stderr, "Invalid option s\n");
+                        fputs("Invalid option s\n", stderr);
                         exit(1);
                     }
                     parse_address_list(optarg, &address_start, &address_start_num);
@@ -153,27 +224,22 @@ int main(int argc, char** argv) {
                 case 'd':
                 {
                     if (*optarg == '-') {
-                        fprintf(stderr, "Invalid option d\n");
+                        fputs("Invalid option d\n", stderr);
                         exit(1);
                     }
                     parse_address_list(optarg, &address_stop, &address_stop_num);
                 }
                 break;
-                case 'o':
-                    errno = 0;
-                    output_file = fopen(optarg, "w");
-                    if (output_file == NULL) {
-                        int error = errno;
-                        errno = 0;
-                        fprintf(stderr, "Error on opening the output file: %s %s\n", optarg, strerror(error));
-                        exit(1);
-                    }
+                case 'k':
+                    opt_kill = true;
                 break;
                 case '?':
                     exit(1);
                 break;
                 case ':':
-                    fprintf(stderr, "Missing argument for option: %c\n", optopt);
+                    fputs("Missing argument for option: ", stderr);
+                    fputc(optopt, stderr);
+                    fputc('\n', stderr);
                     exit(1);
                 break;
                 case 'h':
@@ -185,69 +251,81 @@ int main(int argc, char** argv) {
         }
         argv_program_index = optind;
         if (argv_program_index == argc) {
-            fprintf(stderr, "No program\n");
+            fputs("No program\n", stderr);
             exit(1);
         }
     }
 
-    if (output_file == 0) {
-        output_file = stderr;
-    }
 
-    fprintf(output_file, "# program: ");
+    fputs("# program: ", stdout);
     {
         int i = 0;
         for (i = argv_program_index; i<argc; i++) {
-            fprintf(output_file, "%s ", argv[i]);
+            fputs(argv[i], stdout);
+            putchar(' ');
         }
     }
-    fprintf(output_file, "\n");
-    fprintf(output_file, "# start:");
+    putchar('\n');
+    fputs("# start:", stdout);
     {
         size_t i = 0;
         for(i = 0; i<address_start_num; i++) {
-            fprintf(output_file, " %llx",address_start[i]);
+            putchar(' ');
+            print_hex_nolead((uint8_t *) &address_start[i], sizeof(address_start[i]), stdout);
         }
     }
-    fprintf(output_file, "\n");
-    fprintf(output_file, "# stop:");
+    putchar('\n');
+    fputs("# stop:", stdout);
     {
         size_t i = 0;
         for(i = 0; i<address_stop_num; i++) {
-            fprintf(output_file, " %llx", address_stop[i]);
+            putchar(' ');
+            print_hex_nolead((uint8_t *) &address_stop[i], sizeof(address_stop[i]), stdout);
         }
     }
-    fprintf(output_file, "\n");
-    fflush(output_file);
+    putchar('\n');
+    printf("# tracer pid: %d\n", getpid());
 
+    fflush(stdout);
+    // fork and exec tracee
     errno = 0;
     pid_t pid = fork();
     if (pid == -1) {
-        int error = errno;
-        errno = 0;
-        fprintf(stderr, "Failed to fork: %s\n", strerror(error));
-        if (output_file != stderr && output_file != NULL) {
-            fclose(output_file);
-        }
+        perror("fork");
         exit(1);
     }
     if (pid == 0) {
         // child
-        ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+        long ret = ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+        if (ret != 0) {
+            perror("ptrace(PTRACE_TRACEME)");
+        }
         errno = 0;
         int err = personality(ADDR_NO_RANDOMIZE);
         if (err == -1) {
-            fprintf(stderr, "Failed to set personality: %s\n", strerror(errno));
+            perror("personality(ADDR_NO_RANDOMIZE)");
         }
         errno = 0;
         execvp(argv[argv_program_index], &argv[argv_program_index]);
-        fprintf(stderr, "Failed to exec: %s\n", strerror(errno));
+        perror("exec");
         exit(1);
     }
 
     // parent
+    fprintf(stdout, "# tracee pid: %d\n", pid);
     int waitstatus = 0;
     pid_t werr = waitpid(pid, &waitstatus, 0);
+    long ret = 0;
+    int error = 0;
+    int detach = 0;
+
+    // Options: stop on tracee exit (to print tracee maps) and kill tracee on tracer exit
+    ret = ptrace(PTRACE_SETOPTIONS, pid, NULL, PTRACE_O_TRACEEXIT | PTRACE_O_EXITKILL);
+    if (ret != 0) {
+        perror("ptrace(PTRACE_SETOPTIONS)");
+        error = 1;
+        goto done;
+    }
 
     // debug loop 
     struct user_regs_struct regs;
@@ -258,24 +336,36 @@ int main(int argc, char** argv) {
     int cont = 0;
     breakpoints_enable(pid, address_start, address_start_num, &address_start_bytes);
     int breakpoints = 1;
-    ptrace(PTRACE_CONT, pid, NULL, NULL);
-
-    while(WIFEXITED(waitstatus) == 0 && WIFSIGNALED(waitstatus) == 0) {
-        errno = 0;
+    if (started == 0) {
+        ret = ptrace(PTRACE_CONT, pid, NULL, NULL);
+        if (ret != 0) {
+            perror("ptrace(PTRACE_CONT)");
+            error = 1;
+            goto done;
+        }
         werr = waitpid(pid, &waitstatus, 0);
         if (werr == -1) {
             if (errno == EINTR) {
-                fprintf(output_file, "# EINTR\n");
+                puts("# EINTR\n");
             } else {
-                fprintf(output_file, "# %s\n", strerror(errno));
+                fputs("# ", stdout);
+                puts(strerror(errno));
+                error = 1;
+                goto done;
             }
         }
-        if(WIFEXITED(waitstatus) != 0 || WIFSIGNALED(waitstatus) != 0) {
-            break;
-        }
+    }
+
+    while(WIFEXITED(waitstatus) == 0 && WIFSIGNALED(waitstatus) == 0) {
+        errno = 0;
         if (cont == 0) {
-            ptrace(PTRACE_GETREGS, pid, NULL, &regs);
-            //fprintf(output_file, "stop %llx\n", regs.rip);
+            ret = ptrace(PTRACE_GETREGS, pid, NULL, &regs);
+            if (ret != 0) {
+                perror("ptrace(PTRACE_GETREGS)");
+                error = 1;
+                goto done;
+            }
+            //printf("stop %llx\n", regs.rip);
             
             if (started == 0) {
                 // check if start condition is met
@@ -289,32 +379,84 @@ int main(int argc, char** argv) {
                     // Interrupt sets rip to start address + 1
                     // Reset rip to rip-1
                     regs.rip = regs.rip-1;
-                    ptrace(PTRACE_SETREGS, pid, NULL, &regs);
+                    ret = ptrace(PTRACE_SETREGS, pid, NULL, &regs);
+                    if (ret != 0) {
+                        perror("ptrace(PTRACE_SETREGS)");
+                        error = 1;
+                        goto done;
+                    }
                     started = 1;
                 }
             } 
             if (started == 1) {
-                fprintf(output_file, "%llx\n", regs.rip);
+                print_hex_nolead((uint8_t *) &regs.rip, sizeof(regs.rip), stdout);
+                putchar('\n');
                 // check if stop condition is met
                 if (in_address_list(address_stop, address_stop_num, regs.rip) == 1) {
                     started = 0;
-                    fflush(output_file);
                     cont = 1;
-                    ptrace(PTRACE_DETACH, pid, NULL, NULL);
+                    detach = 1;
+                    goto done;
                 }
             }
         }
-        if (cont == 0) {
-            ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL);
+
+        // Last instruction, print maps
+        if (waitstatus>>8 == (SIGTRAP | (PTRACE_EVENT_EXIT<<8))) {
+            goto done;
         }
+
+        if (cont == 0) {
+            ret = ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL);
+            if (ret != 0) {
+                perror("ptrace(PTRACE_SINGLESTEP)");
+                error = 1;
+                goto done;
+            }
+        }
+
+
+            werr = waitpid(pid, &waitstatus, 0);
+            if (werr == -1) {
+                if (errno == EINTR) {
+                    puts("# EINTR");
+                } else {
+                    fputs("# ", stdout);
+                    puts(strerror(errno));
+                    error = 1;
+                    goto done;
+                }
+            }
+
+            if(WIFEXITED(waitstatus) != 0 || WIFSIGNALED(waitstatus) != 0) {
+                break;
+            }
+
     }
 
-    fprintf(output_file, "# done\n");
-    fflush(output_file);
 
-    if (output_file != stderr && output_file != NULL) {
-        fclose(output_file);
-    }
+    done:
+        puts("# exit");
+        // print tracee maps
+        if (pid != -1) {
+            fflush(stdout);
+            print_maps(pid);
+        }
+        if (detach == 1 && opt_kill == false) {
+            ret = ptrace(PTRACE_DETACH, pid, NULL, NULL);
+            if (ret != 0) {
+                perror("ptrace(PTRACE_DETACH)");
+                error = 1;
+            }
+        }
+        if ((detach == 1 && opt_kill == true) || (error == 1 && pid != -1)) {
+            int iret = kill(pid, SIGKILL);
+            if (iret != 0) {
+                perror("kill(SIGKILL)");
+            }
+        }
+        puts("# done");
+        fflush(stdout);
 
     return 0;
 }
