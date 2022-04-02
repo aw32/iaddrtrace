@@ -104,6 +104,7 @@ void print_help(FILE *f) {
         "    -s ADDR     -- Comma-separated list of addresses to start the output in hex\n"
         "    -d ADDR     -- Comma-separated list of addresses to stop the output in hex\n"
         "    -o FILE     -- Use FILE instead of stdout\n"
+        "    -m FILE     -- Write /proc/PID/maps to FILE\n"
         "    -k          -- Kill tracee on trace end\n"
     ,f);
 }
@@ -115,6 +116,7 @@ static unsigned long long int *address_stop = 0;
 static size_t address_stop_num = 0;
 static FILE *output_file = 0;
 static bool opt_kill = false;
+static FILE *maps_file = NULL;
 
 static int byte_swap(pid_t pid, unsigned long long int addr, uint8_t *save) {
     //fprintf(stderr, "Swap %llx %x\n", addr, *save);
@@ -258,7 +260,7 @@ int main(int argc, char** argv) {
     int argv_program_index = 1;
     {
         int opt;
-        while ((opt = getopt(argc, argv, "+hks:d:o:")) != -1) {
+        while ((opt = getopt(argc, argv, "+hks:d:m:o:")) != -1) {
             switch(opt) {
                 case 's':
                 {
@@ -278,6 +280,19 @@ int main(int argc, char** argv) {
                     parse_address_list(optarg, &address_stop, &address_stop_num);
                 }
                 break;
+                case 'm':
+                {
+                    errno = 0;
+                    maps_file = fopen(optarg, "a");
+                    if (maps_file == NULL) {
+                        perror("fopen");
+                        fputs("Failed to open maps file: ", stderr);
+                        fputs(optarg, stderr);
+                        fputc('\n', stderr);
+                        exit(1);
+                    }
+                }
+                break;
                 case 'o':
                 {
                     errno = 0;
@@ -291,6 +306,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 break;
+
                 case 'k':
                     opt_kill = true;
                 break;
@@ -507,7 +523,12 @@ int main(int argc, char** argv) {
         // print tracee maps
         if (pid != -1) {
             fflush(output_file);
-            print_maps(pid, output_file);
+            if (maps_file != NULL) {
+                print_maps(pid, maps_file);
+                fflush(maps_file);
+                fclose(maps_file);
+                maps_file = NULL;
+            }
         }
         if (detach == 1 && opt_kill == false) {
             ret = ptrace(PTRACE_DETACH, pid, NULL, NULL);
