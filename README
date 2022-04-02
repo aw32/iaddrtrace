@@ -12,7 +12,9 @@ Usage
     Options:
         -s ADDR     -- Comma-separated list of addresses to start the output in hex
         -d ADDR     -- Comma-separated list of addresses to stop the output in hex
-        -o FILE     -- Use FILE instead of stderr
+        -o FILE     -- Use FILE instead of stdout
+        -m FILE     -- Write /proc/PID/maps to FILE
+        -k          -- Kill tracee on trace end
 
 References
 -----------
