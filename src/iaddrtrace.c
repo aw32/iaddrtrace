@@ -12,6 +12,9 @@
 #include <sys/wait.h>
 #include <sys/personality.h>
 
+//TODO: option: reverse roles after exec, so child traces parent, see strace "--daemonize=grandchild" option
+//TODO: option: detach but tracee stopped to make it traceable by other tracer
+//TODO: test to read "invalid" memory regions
 
 void print_maps(pid_t pid, FILE *output_file) {
 
@@ -78,9 +81,40 @@ void print_hex(uint8_t *number, int size, FILE *restrict out) {
     }
 }
 
+void print_hex_rev(uint8_t *number, int size, FILE *restrict out) {
+    for(int i=0; i<=size-1; i++) {
+        uint8_t n = number[i];
+        char c = (n>>4)+48;
+        c = c>57 ? c+39 : c;
+        fputc(c, out);
+        c = (n&15) + 48;
+        c = c>57 ? c+39 : c;
+        fputc(c, out);
+    }
+}
+
 void print_hex_nolead(uint8_t *number, int size, FILE *restrict out) {
     bool lead = 1;
     for(int i=size-1; i>=0; i--) {
+        uint8_t n = number[i];
+        char c = (n>>4)+48;
+        c = c>57 ? c+39 : c;
+        if (c != 48 || lead == 0) {
+            lead = 0;
+            fputc(c, out);
+        }
+        c = (n&15) + 48;
+        c = c>57 ? c+39 : c;
+        if (c != 48 || lead == 0) {
+            lead = 0;
+            fputc(c, out);
+        }
+    }
+}
+
+void print_hex_nolead_rev(uint8_t *number, int size, FILE *restrict out) {
+    bool lead = 1;
+    for(int i=0; i<=size-1; i++) {
         uint8_t n = number[i];
         char c = (n>>4)+48;
         c = c>57 ? c+39 : c;
@@ -105,7 +139,10 @@ void print_help(FILE *f) {
         "    -d ADDR     -- Comma-separated list of addresses to stop the output in hex\n"
         "    -o FILE     -- Use FILE instead of stdout\n"
         "    -m FILE     -- Write /proc/PID/maps to FILE\n"
+        "    -n          -- Spin instead of waiting\n"
+        "    -i          -- Print memory at address\n"
         "    -k          -- Kill tracee on trace end\n"
+        "    -p          -- Turn off ASLR\n"
     ,f);
 }
 
@@ -117,6 +154,9 @@ static size_t address_stop_num = 0;
 static FILE *output_file = 0;
 static bool opt_kill = false;
 static FILE *maps_file = NULL;
+static bool spin = false;
+static bool print_ins = false;
+static bool no_aslr = false;
 
 static int byte_swap(pid_t pid, unsigned long long int addr, uint8_t *save) {
     //fprintf(stderr, "Swap %llx %x\n", addr, *save);
@@ -260,7 +300,7 @@ int main(int argc, char** argv) {
     int argv_program_index = 1;
     {
         int opt;
-        while ((opt = getopt(argc, argv, "+hks:d:m:o:")) != -1) {
+        while ((opt = getopt(argc, argv, "+hkpins:d:m:o:")) != -1) {
             switch(opt) {
                 case 's':
                 {
@@ -291,6 +331,21 @@ int main(int argc, char** argv) {
                         fputc('\n', stderr);
                         exit(1);
                     }
+                }
+                break;
+                case 'n':
+                {
+                    spin = true;
+                }
+                break;
+                case 'i':
+                {
+                    print_ins = true;
+                }
+                break;
+                case 'p':
+                {
+                    no_aslr = true;
                 }
                 break;
                 case 'o':
@@ -380,10 +435,12 @@ int main(int argc, char** argv) {
         if (ret != 0) {
             perror("ptrace(PTRACE_TRACEME)");
         }
-        errno = 0;
-        int err = personality(ADDR_NO_RANDOMIZE);
-        if (err == -1) {
-            perror("personality(ADDR_NO_RANDOMIZE)");
+        if (no_aslr == true) {
+            errno = 0;
+            int err = personality(ADDR_NO_RANDOMIZE);
+            if (err == -1) {
+                perror("personality(ADDR_NO_RANDOMIZE)");
+            }
         }
         errno = 0;
         execvp(argv[argv_program_index], &argv[argv_program_index]);
@@ -471,6 +528,13 @@ int main(int argc, char** argv) {
             } 
             if (started == 1) {
                 print_hex_nolead((uint8_t *) &regs.rip, sizeof(regs.rip), output_file);
+                if (print_ins == true) {
+                    errno = 0;
+                    long ins = ptrace(PTRACE_PEEKTEXT, pid, regs.rip, NULL);
+                    fputc(' ', output_file);
+                    print_hex_rev((uint8_t *) &ins, sizeof(ins), output_file);
+                }
+
                 fputc('\n', output_file);
                 // check if stop condition is met
                 if (in_address_list(address_stop, address_stop_num, regs.rip) == 1) {
@@ -496,8 +560,27 @@ int main(int argc, char** argv) {
             }
         }
 
+            if (spin == true) {
 
-            werr = waitpid(pid, &waitstatus, 0);
+                werr = 0;
+                waitstatus = 0;
+
+                do {
+// Backoff, increases user time, decreases system time
+//                unsigned long spinwait = 1000;
+//                    for (unsigned long w=0; w<spinwait; w++) {
+//                        asm("nop");
+//                        asm("nop");
+//                        asm("nop");
+//                        asm("nop");
+//                        asm("nop");
+//                    }
+                    werr = waitpid(pid, &waitstatus, WNOHANG);
+                } while(werr == 0);
+            } else {
+                // wait
+                werr = waitpid(pid, &waitstatus, 0);
+            }
             if (werr == -1) {
                 if (errno == EINTR) {
                     fputs("# EINTR\n", output_file);
