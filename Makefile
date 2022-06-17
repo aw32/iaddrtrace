@@ -7,7 +7,7 @@ objects=src/iaddrtrace.o
 all: iaddrtrace
 
 clean:
-	rm -f mw_render
+	rm -f iaddrtrace
 	rm -f src/*.o
 
 iaddrtrace: $(objects)

@@ -26,6 +26,7 @@ When the tracer is done it can continue the tracee process and wait for the next
         -n          -- Spin instead of waiting
         -i          -- Print memory at address
         -k          -- Kill tracee on trace end
+        -p          -- Turn off ASLR
 ```
 
 `-m`
@@ -53,7 +54,9 @@ Once the trace is finished, the tracer detaches from the tracee process.
 Now the tracee can continue execution without interrupt.
 Alternatively, the tracee process can be killed.
 
-
+`-p`
+Address space layout randomization (ASLR) is used as security feature to randomize the position of loaded segments.
+Turn it off for more deterministic segment positions.
 
 
 ## Examples
@@ -346,6 +349,6 @@ $ setarch -R strace -e openat,mmap /bin/sleep 1
 
 ## References
 
-[Writing a Linux Debugger](https://blog.tartanllama.xyz/writing-a-linux-debugger-setup/)
-[LLVM-MCA](https://llvm.org/docs/CommandGuide/llvm-mca.html)
-[Intel Architecture Code Analyzer (IACA)](https://www.intel.com/content/www/us/en/developer/articles/tool/architecture-code-analyzer.html)
+* [Writing a Linux Debugger](https://blog.tartanllama.xyz/writing-a-linux-debugger-setup/)
+* [LLVM-MCA](https://llvm.org/docs/CommandGuide/llvm-mca.html)
+* [Intel Architecture Code Analyzer (IACA)](https://www.intel.com/content/www/us/en/developer/articles/tool/architecture-code-analyzer.html)
