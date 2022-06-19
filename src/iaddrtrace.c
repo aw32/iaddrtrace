@@ -16,6 +16,8 @@
 //TODO: option: detach but tracee stopped to make it traceable by other tracer
 //TODO: test to read "invalid" memory regions
 
+#define ERROR_PRINTF(...) fprintf(stderr, "%s:%d = %d %s : ", __func__, __LINE__, errno, strerror(errno)); fprintf(stderr, __VA_ARGS__);
+
 void print_maps(pid_t pid, FILE *output_file) {
 
     char maps_path[100];
@@ -24,7 +26,7 @@ void print_maps(pid_t pid, FILE *output_file) {
 
     FILE *maps = fopen(maps_path, "r");
     if (maps == NULL) {
-        perror("fopen(\"/proc/PID/maps\")");
+        ERROR_PRINTF("fopen %s\n", maps_path);
         return;
     }
 
@@ -44,7 +46,7 @@ void print_maps(pid_t pid, FILE *output_file) {
                     // error
                     int error = ferror(maps);
                     if (error != 0) {
-                        perror("fwrite");
+                        ERROR_PRINTF("fwrite to %s\n", maps_path);
                         fclose(maps);
                         return;
                     }
@@ -60,7 +62,7 @@ void print_maps(pid_t pid, FILE *output_file) {
             }
             int error = ferror(maps);
             if (error != 0) {
-                perror("fread(\"/proc/PID/maps\")");
+                ERROR_PRINTF("fread from %s\n", maps_path);
                 fclose(maps);
                 return;
             }
@@ -69,31 +71,45 @@ void print_maps(pid_t pid, FILE *output_file) {
     fclose(maps);
 }
 
-void print_hex(uint8_t *number, int size, FILE *restrict out) {
+int print_hex(uint8_t *number, int size, FILE *restrict out) {
     for(int i=size-1; i>=0; i--) {
         uint8_t n = number[i];
         char c = (n>>4)+48;
         c = c>57 ? c+39 : c;
-        fputc(c, out);
+        if (fputc(c, out) == EOF) {
+            ERROR_PRINTF("fputc\n");
+            return -1;
+        }
         c = (n&15) + 48;
         c = c>57 ? c+39 : c;
-        fputc(c, out);
+        if (fputc(c, out) == EOF) {
+            ERROR_PRINTF("fputc\n");
+            return -1;
+        }
     }
+    return 0;
 }
 
-void print_hex_rev(uint8_t *number, int size, FILE *restrict out) {
+int print_hex_rev(uint8_t *number, int size, FILE *restrict out) {
     for(int i=0; i<=size-1; i++) {
         uint8_t n = number[i];
         char c = (n>>4)+48;
         c = c>57 ? c+39 : c;
-        fputc(c, out);
+        if (fputc(c, out) == EOF) {
+            ERROR_PRINTF("fputc\n");
+            return -1;
+        }
         c = (n&15) + 48;
         c = c>57 ? c+39 : c;
-        fputc(c, out);
+        if (fputc(c, out) == EOF) {
+            ERROR_PRINTF("fputc\n");
+            return -1;
+        }
     }
+    return 0;
 }
 
-void print_hex_nolead(uint8_t *number, int size, FILE *restrict out) {
+int print_hex_nolead(uint8_t *number, int size, FILE *restrict out) {
     bool lead = 1;
     for(int i=size-1; i>=0; i--) {
         uint8_t n = number[i];
@@ -101,18 +117,25 @@ void print_hex_nolead(uint8_t *number, int size, FILE *restrict out) {
         c = c>57 ? c+39 : c;
         if (c != 48 || lead == 0) {
             lead = 0;
-            fputc(c, out);
+            if (fputc(c, out) == EOF) {
+                ERROR_PRINTF("fputc\n");
+                return -1;
+            }
         }
         c = (n&15) + 48;
         c = c>57 ? c+39 : c;
         if (c != 48 || lead == 0) {
             lead = 0;
-            fputc(c, out);
+            if (fputc(c, out) == EOF) {
+                ERROR_PRINTF("fputc\n");
+                return -1;
+            }
         }
     }
+    return 0;
 }
 
-void print_hex_nolead_rev(uint8_t *number, int size, FILE *restrict out) {
+int print_hex_nolead_rev(uint8_t *number, int size, FILE *restrict out) {
     bool lead = 1;
     for(int i=0; i<=size-1; i++) {
         uint8_t n = number[i];
@@ -120,15 +143,22 @@ void print_hex_nolead_rev(uint8_t *number, int size, FILE *restrict out) {
         c = c>57 ? c+39 : c;
         if (c != 48 || lead == 0) {
             lead = 0;
-            fputc(c, out);
+            if (fputc(c, out) == EOF) {
+                ERROR_PRINTF("fputc\n");
+                return -1;
+            }
         }
         c = (n&15) + 48;
         c = c>57 ? c+39 : c;
         if (c != 48 || lead == 0) {
             lead = 0;
-            fputc(c, out);
+            if (fputc(c, out) == EOF) {
+                ERROR_PRINTF("fputc\n");
+                return -1;
+            }
         }
     }
+    return 0;
 }
 
 void print_help(FILE *f) {
@@ -142,21 +172,24 @@ void print_help(FILE *f) {
         "    -n          -- Spin instead of waiting\n"
         "    -i          -- Print memory at address\n"
         "    -k          -- Kill tracee on trace end\n"
-        "    -p          -- Turn off ASLR\n"
+        "    -p          -- Keep ASLR on\n"
     ,f);
 }
 
-static uint8_t *address_start_bytes = 0;
-static unsigned long long int *address_start = 0;
+static uint8_t *address_start_bytes = NULL;
+static unsigned long long int *address_start = NULL;
 static size_t address_start_num = 0;
-static unsigned long long int *address_stop = 0;
+static unsigned long long int *address_stop = NULL;
 static size_t address_stop_num = 0;
-static FILE *output_file = 0;
+static FILE *output_file = NULL;
+static char *output_file_path = NULL;
 static bool opt_kill = false;
 static FILE *maps_file = NULL;
+static char *maps_file_path = NULL;
 static bool spin = false;
 static bool print_ins = false;
-static bool no_aslr = false;
+static bool keep_aslr = false;
+static pid_t pid = -1;
 
 static int byte_swap(pid_t pid, unsigned long long int addr, uint8_t *save) {
     //fprintf(stderr, "Swap %llx %x\n", addr, *save);
@@ -165,11 +198,7 @@ static int byte_swap(pid_t pid, unsigned long long int addr, uint8_t *save) {
     if (data == -1) {
         int error = errno;
         if (error != 0) { // return value maybe actual data, not an error
-            fputs("ptrace(PTRACE_PEEKDATA): ", stderr);
-            fputs(strerror(error), stderr);
-            fputs("\nFailed to peek data at ", stderr);
-            print_hex_nolead((uint8_t *) &addr, sizeof(addr), stderr);
-            fputc('\n', stderr);
+            ERROR_PRINTF("ptrace(PTRACE_PEEKDATA) Failed to peek data at %llx\n", addr);
             return -1;
         }
     }
@@ -179,12 +208,7 @@ static int byte_swap(pid_t pid, unsigned long long int addr, uint8_t *save) {
     errno = 0;
     long err = ptrace(PTRACE_POKEDATA, pid, addr, data);
     if (err == -1) {
-        int error = errno;
-        fputs("ptrace(PTRACE_POKEDATA): ", stderr);
-        fputs(strerror(error), stderr);
-        fputs("\nFailed to poke data at ", stderr);
-        print_hex_nolead((uint8_t *) &addr, sizeof(addr), stderr);
-        fputc('\n', stderr);
+        ERROR_PRINTF("ptrace(PTRACE_POKEDATA) Failed to poke data at %llx\n", addr);
         return -1;
     }
     return 0;
@@ -197,7 +221,7 @@ static int breakpoints_enable(pid_t pid, unsigned long long int *list, size_t nu
     }
     *save = (uint8_t*) calloc(num, sizeof(uint8_t));
     if (*save == NULL) {
-        fputs("Out of memory\n", stderr);
+        ERROR_PRINTF("calloc %ld bytes Out of memoy\n", num * sizeof(uint8_t));
         exit(1);
     }
     size_t i = 0;
@@ -261,7 +285,7 @@ static void parse_address_list(const char *in_list, unsigned long long int **out
     /* allocate list */
     *out_list = (unsigned long long int *) calloc(segments, sizeof(unsigned long long int));
     if (*out_list == NULL) {
-        fputs("Out of memory\n", stderr);
+        ERROR_PRINTF("calloc %ld bytes Out of memoy\n", segments * sizeof(unsigned long long int));
         exit(1);
     }
     /* try to parse each segment */
@@ -273,16 +297,12 @@ static void parse_address_list(const char *in_list, unsigned long long int **out
     for(i = 0; i < segments; i++) {
         token = strsep(&seg_next, ",");
         if (token == NULL) {
-            fputs("Invalid option ", stderr);
-            fputs(in_list, stderr);
-            fputc('\n', stderr);
+            ERROR_PRINTF("Invalid option %s\n", in_list);
             exit(1);
         }
         (*out_list)[i] = strtoull(token, &endptr, 16);
         if (*endptr != 0) {
-            fputs("Invalid address ", stderr);
-            fputs(token, stderr);
-            fputc('\n', stderr);
+            ERROR_PRINTF("Invalid address %s\n", token);
             exit(1);
         }
     }
@@ -323,12 +343,10 @@ int main(int argc, char** argv) {
                 case 'm':
                 {
                     errno = 0;
+                    maps_file_path = optarg;
                     maps_file = fopen(optarg, "a");
                     if (maps_file == NULL) {
-                        perror("fopen");
-                        fputs("Failed to open maps file: ", stderr);
-                        fputs(optarg, stderr);
-                        fputc('\n', stderr);
+                        ERROR_PRINTF("fopen Failed to open maps file %s\n", optarg);
                         exit(1);
                     }
                 }
@@ -345,19 +363,17 @@ int main(int argc, char** argv) {
                 break;
                 case 'p':
                 {
-                    no_aslr = true;
+                    keep_aslr = true;
                 }
                 break;
                 case 'o':
                 {
                     errno = 0;
+                    output_file_path = optarg;
                     output_file = fopen(optarg, "w");
                     if (output_file == NULL) {
-                        perror("fopen");
-                        fputs("Failed to open output file: ", stderr);
-                        fputs(optarg, stderr);
-                        fputc('\n', stderr);
-                        exit(1);
+                        ERROR_PRINTF("fopen Failed to open output file %s\n", optarg);
+                        goto cleanup;
                     }
                 }
                 break;
@@ -372,12 +388,12 @@ int main(int argc, char** argv) {
                     fputs("Missing argument for option: ", stderr);
                     fputc(optopt, stderr);
                     fputc('\n', stderr);
-                    exit(1);
+                    goto cleanup;
                 break;
                 case 'h':
                 default:
                     print_help(stderr);
-                    exit(1);
+                    goto cleanup;
                 break;
             }
         }
@@ -388,25 +404,45 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (output_file == 0) {
+    if (output_file == NULL) {
         output_file = stdout;
     }
 
-    fputs("# program: ", output_file);
+    if(fputs("# program: ", output_file) == EOF) {
+        ERROR_PRINTF("fputs: write to %s\n", output_file_path);
+        goto cleanup;
+    }
     {
         int i = 0;
         for (i = argv_program_index; i<argc; i++) {
-            fputs(argv[i], output_file);
-            fputc(' ', output_file);
+            if (fputs(argv[i], output_file) == EOF) {
+                ERROR_PRINTF("fputs: write to %s\n", output_file_path);
+                goto cleanup;
+            }
+            if (fputc(' ', output_file) == EOF) {
+                ERROR_PRINTF("fputc: write to %s\n", output_file_path);
+                goto cleanup;
+            }
         }
     }
-    fputc('\n', output_file);
-    fputs("# start:", output_file);
+    if (fputc('\n', output_file) == EOF) {
+        ERROR_PRINTF("fputc: write to %s\n", output_file_path);
+        goto cleanup;
+    }
+    if (fputs("# start:", output_file) == EOF) {
+        ERROR_PRINTF("fputs: write to %s\n", output_file_path);
+        goto cleanup;
+    }
     {
         size_t i = 0;
         for(i = 0; i<address_start_num; i++) {
-            fputc(' ', output_file);
-            print_hex_nolead((uint8_t *) &address_start[i], sizeof(address_start[i]), output_file);
+            if (fputc(' ', output_file) == EOF) {
+                ERROR_PRINTF("fputc: write to %s\n", output_file_path);
+                goto cleanup;
+            }
+            if (print_hex_nolead((uint8_t *) &address_start[i], sizeof(address_start[i]), output_file) != 0) {
+                goto cleanup;
+            }
         }
     }
     fputc('\n', output_file);
@@ -414,54 +450,74 @@ int main(int argc, char** argv) {
     {
         size_t i = 0;
         for(i = 0; i<address_stop_num; i++) {
-            fputc(' ', output_file);
-            print_hex_nolead((uint8_t *) &address_stop[i], sizeof(address_stop[i]), output_file);
+            if (fputc(' ', output_file) == EOF) {
+                ERROR_PRINTF("fputc: write to %s\n", output_file_path);
+                goto cleanup;
+            }
+            if (print_hex_nolead((uint8_t *) &address_stop[i], sizeof(address_stop[i]), output_file) != 0) {
+                goto cleanup;
+            }
         }
     }
-    fputc('\n', output_file);
-    fprintf(output_file, "# tracer pid: %d\n", getpid());
+    if (fputc('\n', output_file) == EOF) {
+        ERROR_PRINTF("fputc: write to %s\n", output_file_path);
+        goto cleanup;
+    }
+    if (fprintf(output_file, "# tracer pid: %d\n", getpid()) == EOF) {
+        ERROR_PRINTF("fprintf: write to %s\n", output_file_path);
+        goto cleanup;
+    }
 
-    fflush(output_file);
+    if (fflush(output_file) == EOF) {
+        ERROR_PRINTF("fflush: write to %s\n", output_file_path);
+        goto cleanup;
+    }
     // fork and exec tracee
     errno = 0;
-    pid_t pid = fork();
+    pid = fork();
     if (pid == -1) {
-        perror("fork");
-        exit(1);
+        ERROR_PRINTF("fork\n");
+        goto cleanup;
     }
     if (pid == 0) {
         // child
         long ret = ptrace(PTRACE_TRACEME, 0, NULL, NULL);
         if (ret != 0) {
-            perror("ptrace(PTRACE_TRACEME)");
+            ERROR_PRINTF("ptrace(PTRACE_TRACEME)\n");
+            exit(1);
         }
-        if (no_aslr == true) {
+        if (keep_aslr == false) {
             errno = 0;
             int err = personality(ADDR_NO_RANDOMIZE);
             if (err == -1) {
-                perror("personality(ADDR_NO_RANDOMIZE)");
+                ERROR_PRINTF("personality(ADDR_NO_RANDOMIZE)\n");
+                exit(1);
             }
         }
         errno = 0;
         execvp(argv[argv_program_index], &argv[argv_program_index]);
-        perror("exec");
+        ERROR_PRINTF("execvp\n");
         exit(1);
     }
 
     // parent
-    fprintf(output_file, "# tracee pid: %d\n", pid);
+    if (fprintf(output_file, "# tracee pid: %d\n", pid) == EOF) {
+        ERROR_PRINTF("fprintf: write to %s\n", output_file_path);
+        goto cleanup;
+    }
     int waitstatus = 0;
     pid_t werr = waitpid(pid, &waitstatus, 0);
     long ret = 0;
-    int error = 0;
-    int detach = 0;
 
     // Options: stop on tracee exit (to print tracee maps) and kill tracee on tracer exit
-    ret = ptrace(PTRACE_SETOPTIONS, pid, NULL, PTRACE_O_TRACEEXIT | PTRACE_O_EXITKILL);
+    int options = PTRACE_O_TRACEEXIT;
+    if (opt_kill == true) {
+        options |= PTRACE_O_EXITKILL;
+    }
+    ret = ptrace(PTRACE_SETOPTIONS, pid, NULL, options);
     if (ret != 0) {
-        perror("ptrace(PTRACE_SETOPTIONS)");
-        error = 1;
-        goto done;
+        ERROR_PRINTF("ptrace(PTRACE_SETOPTIONS)\n");
+        goto cleanup;
     }
 
     // debug loop 
@@ -471,25 +527,30 @@ int main(int argc, char** argv) {
         started = 0;
     }
     int cont = 0;
-    breakpoints_enable(pid, address_start, address_start_num, &address_start_bytes);
+    ret = breakpoints_enable(pid, address_start, address_start_num, &address_start_bytes);
+    if (ret != 0) {
+        ERROR_PRINTF("breakpoints_enable Failed to activate breakpoints. Are the start addresses correct?\n");
+        goto cleanup;
+    }
     int breakpoints = 1;
     if (started == 0) {
         ret = ptrace(PTRACE_CONT, pid, NULL, NULL);
         if (ret != 0) {
-            perror("ptrace(PTRACE_CONT)");
-            error = 1;
-            goto done;
+            ERROR_PRINTF("ptrace(PTRACE_CONT)\n");
+            goto cleanup;
         }
         werr = waitpid(pid, &waitstatus, 0);
         if (werr == -1) {
             if (errno == EINTR) {
-                fputs("# EINTR\n", output_file);
+                if (fputs("# EINTR\n", output_file) == EOF) {
+                    ERROR_PRINTF("fputs: write to %s\n", output_file_path);
+                    goto cleanup;
+                }
             } else {
-                fputs("# ", output_file);
-                fputs(strerror(errno), output_file);
-                fputc('\n', output_file);
-                error = 1;
-                goto done;
+                if (fprintf(output_file, "# %s\n", strerror(errno)) < 0) {
+                    ERROR_PRINTF("fprintf: write to %s\n", output_file_path);
+                }
+                goto cleanup;
             }
         }
     }
@@ -499,9 +560,8 @@ int main(int argc, char** argv) {
         if (cont == 0) {
             ret = ptrace(PTRACE_GETREGS, pid, NULL, &regs);
             if (ret != 0) {
-                perror("ptrace(PTRACE_GETREGS)");
-                error = 1;
-                goto done;
+                ERROR_PRINTF("ptrace(PTRACE_GETREGS)\n");
+                goto cleanup;
             }
             //printf("stop %llx\n", regs.rip);
             
@@ -511,7 +571,10 @@ int main(int argc, char** argv) {
                     //fprintf(stderr, "Found start address %llx\n", regs.rip-1);
                     // Disable breakpoint
                     if (breakpoints == 1) {
-                        breakpoints_disable(pid, address_start, address_start_num, &address_start_bytes);
+                        if (breakpoints_disable(pid, address_start, address_start_num, &address_start_bytes) != 0) {
+                            ERROR_PRINTF("breakpoints_disable Failed to deactivate breakpoints.\n");
+                            goto cleanup;
+                        }
                         breakpoints = 0;
                     }
                     // Interrupt sets rip to start address + 1
@@ -519,9 +582,8 @@ int main(int argc, char** argv) {
                     regs.rip = regs.rip-1;
                     ret = ptrace(PTRACE_SETREGS, pid, NULL, &regs);
                     if (ret != 0) {
-                        perror("ptrace(PTRACE_SETREGS)");
-                        error = 1;
-                        goto done;
+                        ERROR_PRINTF("ptrace(PTRACE_SETREGS)\n");
+                        goto cleanup;
                     }
                     started = 1;
                 }
@@ -531,16 +593,26 @@ int main(int argc, char** argv) {
                 if (print_ins == true) {
                     errno = 0;
                     long ins = ptrace(PTRACE_PEEKTEXT, pid, regs.rip, NULL);
-                    fputc(' ', output_file);
-                    print_hex_rev((uint8_t *) &ins, sizeof(ins), output_file);
+                    if (ins < 0 && errno != 0) {
+                        ERROR_PRINTF("ptrace(PTRACE_PEEKTEXT)\n");
+                    }
+                    if (fputc(' ', output_file) == EOF) {
+                        ERROR_PRINTF("fputc: write to %s\n", output_file_path);
+                        goto cleanup;
+                    }
+                    if (print_hex_rev((uint8_t *) &ins, sizeof(ins), output_file) != 0) {
+                        goto cleanup;
+                    }
                 }
 
-                fputc('\n', output_file);
+                if (fputc('\n', output_file) == EOF) {
+                    ERROR_PRINTF("fputc: write to %s\n", output_file_path);
+                    goto cleanup;
+                }
                 // check if stop condition is met
                 if (in_address_list(address_stop, address_stop_num, regs.rip) == 1) {
                     started = 0;
                     cont = 1;
-                    detach = 1;
                     goto done;
                 }
             }
@@ -554,9 +626,8 @@ int main(int argc, char** argv) {
         if (cont == 0) {
             ret = ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL);
             if (ret != 0) {
-                perror("ptrace(PTRACE_SINGLESTEP)");
-                error = 1;
-                goto done;
+                ERROR_PRINTF("ptrace(PTRACE_SINGLESTEP)\n");
+                goto cleanup;
             }
         }
 
@@ -583,13 +654,15 @@ int main(int argc, char** argv) {
             }
             if (werr == -1) {
                 if (errno == EINTR) {
-                    fputs("# EINTR\n", output_file);
+                    if (fputs("# EINTR\n", output_file) == EOF) {
+                        ERROR_PRINTF("fputs: write to %s\n", output_file_path);
+                        goto cleanup;
+                    }
                 } else {
-                    fputs("# ", output_file);
-                    fputs(strerror(errno), output_file);
-                    fputc('\n', output_file);
-                    error = 1;
-                    goto done;
+                    if (fprintf(output_file, "# %s\n", strerror(errno)) < 0) {
+                        ERROR_PRINTF("fprintf: write to %s\n", output_file_path);
+                    }
+                    goto cleanup;
                 }
             }
 
@@ -601,37 +674,66 @@ int main(int argc, char** argv) {
 
 
     done:
-        fputs("# exit", output_file);
-        fputc('\n', output_file);
+        if (fputs("# exit", output_file) == EOF) {
+            ERROR_PRINTF("fputs: write to %s\n", output_file_path);
+        }
+        if (fputc('\n', output_file) == EOF) {
+            ERROR_PRINTF("fputc: write to %s\n", output_file_path);
+        }
         // print tracee maps
         if (pid != -1) {
-            fflush(output_file);
+            if (fflush(output_file) == EOF) {
+                ERROR_PRINTF("fflush: write to %s\n", output_file_path);
+            } else
             if (maps_file != NULL) {
                 print_maps(pid, maps_file);
-                fflush(maps_file);
-                fclose(maps_file);
-                maps_file = NULL;
+                if (fflush(maps_file) == EOF) {
+                    ERROR_PRINTF("fflush: write to %s\n", maps_file_path);
+                }
             }
         }
-        if (detach == 1 && opt_kill == false) {
-            ret = ptrace(PTRACE_DETACH, pid, NULL, NULL);
-            if (ret != 0) {
-                perror("ptrace(PTRACE_DETACH)");
-                error = 1;
+        if (fputs("# done", output_file) == EOF) {
+            ERROR_PRINTF("fputs: write to %s\n", output_file_path);
+        }
+        if (fputc('\n', output_file) == EOF) {
+            ERROR_PRINTF("fputc: write to %s\n", output_file_path);
+        }
+        if (fflush(output_file) == EOF) {
+            ERROR_PRINTF("fflush: write to %s\n", output_file_path);
+        }
+    cleanup:
+        if (pid != -1) {
+            if (opt_kill == false) {
+                // continue tracee and detach
+                ret = ptrace(PTRACE_DETACH, pid, NULL, NULL);
+                if (ret != 0) {
+                    ERROR_PRINTF("ptrace(PTRACE_DETACH)\n");
+                }
+            } else {
+                int iret = kill(pid, SIGKILL);
+                if (iret != 0) {
+                    ERROR_PRINTF("kill(SIGKILL)\n");
+                }
             }
         }
-        if ((detach == 1 && opt_kill == true) || (error == 1 && pid != -1)) {
-            int iret = kill(pid, SIGKILL);
-            if (iret != 0) {
-                perror("kill(SIGKILL)");
-            }
-        }
-        fputs("# done", output_file);
-        fputc('\n', output_file);
-        fflush(output_file);
-
         if (output_file != stdout && output_file != NULL) {
             fclose(output_file);
+        }
+        if (maps_file != NULL) {
+            fclose(maps_file);
+            maps_file = NULL;
+        }
+        if (address_start_bytes != NULL) {
+            free(address_start_bytes);
+            address_start_bytes = NULL;
+        }
+        if (address_start != NULL) {
+            free(address_start);
+            address_start = NULL;
+        }
+        if (address_stop != NULL) {
+            free(address_stop);
+            address_stop = NULL;
         }
 
     return 0;

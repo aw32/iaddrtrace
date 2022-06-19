@@ -26,7 +26,7 @@ When the tracer is done it can continue the tracee process and wait for the next
         -n          -- Spin instead of waiting
         -i          -- Print memory at address
         -k          -- Kill tracee on trace end
-        -p          -- Turn off ASLR
+        -p          -- Keep ASLR on
 ```
 
 `-m`
@@ -56,7 +56,8 @@ Alternatively, the tracee process can be killed.
 
 `-p`
 Address space layout randomization (ASLR) is used as security feature to randomize the position of loaded segments.
-Turn it off for more deterministic segment positions.
+Deactivating ASLR leads to more deterministic segment positions.
+Use this option to keep it turned on.
 
 
 ## Examples
